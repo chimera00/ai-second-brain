@@ -1,41 +1,141 @@
-# ai-second-brain
+# AI Second Brain
 
-An opinionated reference architecture and working scaffolding for a self-improving, self-maintaining personal knowledge base operated by AI agents.
+An AI second brain should give a model the right note at the right time: not pour every note into every prompt.
 
-## What and why
+This repository is a small, inspectable starting point for a local knowledge vault. It creates content-addressed Markdown records, rebuilds a readable index, preserves superseded history, and retrieves records with deterministic lexical scoring. The starter scripts use only the Python standard library and make no network calls.
 
-Personal knowledge management methods are plentiful. Reliable, agent-maintained memory is not.
+## Try the example
 
-An AI assistant can capture notes, summarize sources, and retrieve documents, but those abilities alone do not produce trustworthy long-term memory. Without explicit controls, a knowledge base accumulates duplicates, loses provenance, overwrites useful history, and quietly treats failed reads as empty results.
+Python 3.10 or newer is sufficient.
 
-`ai-second-brain` is a practical companion project for building a different kind of system: one in which automation can propose, organize, and maintain knowledge while review gates preserve quality and accountability.
-
-## Architecture at a glance
-
-```text
-capture -> screen -> gate -> promote
+```bash
+python scripts/recall.py --vault example-vault capture contract
+python scripts/recall.py --vault example-vault --tag retrieval --json recall
 ```
 
-- **Capture:** ingest candidate knowledge with source metadata and stable watermarks.
-- **Screen:** reject secrets, malformed records, duplicates, and policy violations.
-- **Gate:** apply increasingly rigorous review before durable knowledge is accepted.
-- **Promote:** write approved knowledge into the canonical store with provenance.
+The first command prints a compact tab-separated result. The second returns canonical JSON. A successful search with no matches exits `0` and explicitly reports zero results; an unreadable or invalid vault exits nonzero.
 
-The design is fail-closed: uncertain or incomplete candidates do not enter durable memory. Existing knowledge is superseded with an explicit relationship instead of being silently overwritten. Ingestion is watermarked and idempotent, so a retry does not create a second copy. Every promoted item retains enough provenance to explain where it came from and how it was accepted.
+## Create a vault
 
-## Quickstart
+Put the note body in a strict UTF-8 text file, then capture it:
 
-> Placeholder: installation instructions, example configuration, and a local demonstration will be added with the first working scaffold.
+```bash
+python scripts/new-memory.py \
+  --vault my-vault \
+  --source manual-note \
+  --title "First durable note" \
+  --tag getting-started \
+  --input note.md
+```
 
-## Roadmap
+The command returns one JSON receipt. It creates:
 
-Development progresses from documentation and repository scaffolding to a reference capture pipeline, a recall and supersession engine, and multi-agent review gates. See [docs/roadmap.md](docs/roadmap.md) for the phased plan.
+```text
+my-vault/
+├── MEMORY.md
+└── memories/
+    └── <content-sha256>.md
+```
 
-## The Book
+You can also pipe the note body through standard input. One leading UTF-8 byte-order-marker sequence is ignored when the shell transmits the bytes without conversion; a file supplied with `--input` must be strict UTF-8 without a byte-order marker. Windows PowerShell 5.1 otherwise uses a legacy native-pipeline encoding, so set its native output encoding before piping non-ASCII text or a marker:
 
-This repository is the companion project for *The AI Second Brain — Build a Self-Improving Knowledge Base with AI Agents, Obsidian, and GitHub*.
+```powershell
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+```
+
+Windows PowerShell may add one UTF-8 preamble to the native pipeline; the capture command ignores that single sequence. Do not prepend another marker in the body. If the shell cannot guarantee lossless UTF-8 transport, prefer `--input` with a UTF-8 file that has no byte-order marker.
+
+Search the new vault:
+
+```bash
+python scripts/recall.py --vault my-vault --tag getting-started durable note
+```
+
+## What the starter does
+
+- Normalizes Unicode composition and line endings before hashing content.
+- Uses the full SHA-256 of normalized content as the record ID and filename.
+- Stores one-line canonical JSON metadata inside each Markdown record.
+- Rebuilds `MEMORY.md` into active and superseded sections.
+- Rejects missing supersession targets, cycles, malformed records, linked-path escapes, and conflicting retries.
+- Excludes superseded records from recall unless `--include-history` is set.
+- Refuses terminal-control input, common credential-shaped content, private source labels, and empty normalized tags with content-free errors.
+- Produces stable lexical ranking without a database, embedding service, or model call.
+
+## What it does not claim
+
+This is a reference implementation, not a complete production memory platform.
+
+- Credential screening is heuristic; it cannot prove that arbitrary text is safe.
+- The record write and index write are separately atomic, not one transaction. Retrying the same capture rebuilds the index after an interrupted index update.
+- The scripts do not coordinate concurrent writers.
+- Records are not encrypted.
+- Lexical recall does not understand semantic similarity.
+- No benchmark result establishes that this layout is best for every vault.
+
+Use version control or another backup system, restrict access to the vault, and review material before making it public.
+
+## Repository map
+
+```text
+scripts/
+  new-memory.py       deterministic capture and supersession
+  recall.py           deterministic local recall
+tests/
+  test_scripts.py     behavior and mutation regressions
+  test_public_package.py exact inventory and public-safety checks
+example-vault/
+  MEMORY.md           generated active/history index
+  memories/           three synthetic records
+  doctrine/RULES.md   compact standing-rule example
+guides/
+  quickstart.md
+  capture-and-recall.md
+  safety-and-maintenance.md
+```
+
+## Guides
+
+- [Quickstart](guides/quickstart.md)
+- [Capture and recall](guides/capture-and-recall.md)
+- [Safety and maintenance](guides/safety-and-maintenance.md)
+
+## Tests
+
+Run the suite without leaving bytecode files in the working tree:
+
+```bash
+python -B -m unittest discover -s tests -p "test_*.py" -v
+```
+
+The tests cover deterministic identity, retry behavior, exact record schemas, active/history indexing, lexical ranking, zero-result behavior, path containment, unsafe-input refusals, malformed-state failures, and supersession cycles.
+
+## Record format
+
+Each file under `memories/` contains:
+
+1. a format marker;
+2. a title;
+3. one canonical JSON metadata object; and
+4. the normalized content.
+
+Metadata fields are closed: `content_sha256`, `id`, `source`, `supersedes`, `tags`, `title`, and `version`. Unknown fields poison the vault instead of being silently ignored.
+
+## License
+
+This companion draft does not select, replace, or assert legal metadata. Publication must retain or add the repository-owner-approved license file; until that approval is bound, distribution rights are unknown.
+
+## The book
+
+This repository is the companion project for *The AI Second Brain: Build a Self-Improving Knowledge Base with AI Agents*, the first book in a series on operating agent memory as a working system.
+
+What the book adds beyond this repository: the reasoning behind each design choice, the incident record that produced the rules, and the copyable operating panels (setup, maintenance, schedulers, supporting agents) in context. Nothing in the book is required to use this repository.
 
 Join the waitlist: [noaifear.ai/ai-second-brain](https://noaifear.ai/ai-second-brain/)
+
+## Architecture and roadmap
+
+See [docs/architecture.md](docs/architecture.md) and [docs/roadmap.md](docs/roadmap.md).
 
 ## License
 
