@@ -287,7 +287,10 @@ def validate_supersession(records: list[dict[str, object]]) -> set[str]:
 
 
 def tokens(value: str) -> list[str]:
-    return re.findall(r"[^\W_]+", value.casefold(), flags=re.UNICODE)
+    # Compose before folding so decomposed text matches the NFC query, and again
+    # after folding because casefold can emit decomposed sequences.
+    folded = unicodedata.normalize("NFC", unicodedata.normalize("NFC", value).casefold())
+    return re.findall(r"[^\W_]+", folded, flags=re.UNICODE)
 
 
 def normalize_tag(value: str) -> str:
@@ -336,11 +339,7 @@ def main(argv: list[str]) -> int:
         return 4
     args = build_parser().parse_args(argv[1:])
     query = unicodedata.normalize("NFC", " ".join(args.query))
-    if (
-        has_unsafe_control(query)
-        or any(has_unsafe_control(tag) for tag in args.tag)
-        or has_unsafe_control(str(args.vault))
-    ):
+    if has_unsafe_control(query) or any(has_unsafe_control(tag) for tag in args.tag):
         print("E_UNSAFE_INPUT", file=sys.stderr)
         return 4
     if has_credential_shape(query) or any(has_credential_shape(tag) for tag in args.tag):
@@ -352,6 +351,9 @@ def main(argv: list[str]) -> int:
         print("E_INVALID_TAG", file=sys.stderr)
         return 2
     required_tags = set(normalized_tags)
+    if has_unsafe_control(str(args.vault)):
+        print("E_VAULT_STATE", file=sys.stderr)
+        return 3
     try:
         records = load_records(args.vault)
         superseded_ids = validate_supersession(records)
