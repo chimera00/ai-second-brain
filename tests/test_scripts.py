@@ -1,5 +1,8 @@
+import contextlib
+import io
 import json
 import hashlib
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -7,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +56,41 @@ def make_directory_link(link: Path, target: Path) -> bool:
         )
         return result.returncode == 0
     return True
+
+
+def load_script_module(name: str):
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_")[:-3], ROOT / "scripts" / name)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def write_raw_record(vault: Path, *, title: str, content: str, source: str = "manual-note") -> str:
+    """Write a valid record verbatim, without the composition normalization new-memory.py applies."""
+    identifier = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    metadata = {
+        "content_sha256": identifier,
+        "id": identifier,
+        "source": source,
+        "supersedes": None,
+        "tags": [],
+        "title": title,
+        "version": 1,
+    }
+    text = (
+        "<!-- memory-record-v1 -->\n"
+        f"# {title}\n"
+        "\n"
+        "```json\n"
+        f"{json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}\n"
+        "```\n"
+        "\n## Content\n\n"
+        f"{content}"
+    )
+    memories = vault / "memories"
+    memories.mkdir(parents=True, exist_ok=True)
+    (memories / f"{identifier}.md").write_bytes(text.encode("utf-8"))
+    return identifier
 
 
 class StarterScriptTests(unittest.TestCase):
@@ -473,6 +512,121 @@ class StarterScriptTests(unittest.TestCase):
             nfd_payload = json.loads(nfd.stdout)
             self.assertEqual(nfc_payload["count"], 1)
             self.assertEqual(nfc_payload, nfd_payload)
+
+    def test_decomposed_record_text_matches_either_query_form(self):
+        decomposed = "café"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            vault = Path(temporary_directory) / "vault"
+            identifier = write_raw_record(
+                vault,
+                title=f"{decomposed} notes",
+                content=f"Decomposed {decomposed} memory.\n",
+            )
+            for query in ("café", decomposed):
+                with self.subTest(query=ascii(query)):
+                    result = run_script(RECALL, "--vault", str(vault), "--json", query)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    payload = json.loads(result.stdout)
+                    self.assertEqual(payload["count"], 1)
+                    self.assertEqual(payload["results"][0]["id"], identifier)
+                    self.assertEqual(payload["results"][0]["score"], 4)
+
+    def test_composed_record_text_matches_decomposed_query(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            vault = Path(temporary_directory) / "vault"
+            identifier = write_raw_record(vault, title="Plain title", content="Composed café memory.\n")
+            result = run_script(RECALL, "--vault", str(vault), "--json", "café")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["count"], 1)
+            self.assertEqual(payload["results"][0]["id"], identifier)
+            self.assertEqual(payload["results"][0]["score"], 1)
+
+    def test_tokens_do_not_split_on_combining_marks(self):
+        recall = load_script_module("recall.py")
+        self.assertEqual(recall.tokens("Café au lait"), ["café", "au", "lait"])
+        self.assertEqual(recall.tokens("Café"), recall.tokens("CAFÉ"))
+
+    def test_unsafe_vault_path_is_a_vault_state_error(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            vault = Path(temporary_directory) / "vault\u0007bell"
+            result = run_script(RECALL, "--vault", str(vault), "memory")
+            self.assertEqual(result.returncode, 3)
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(result.stderr, "E_VAULT_STATE\n")
+
+    def test_unsafe_query_still_wins_over_unsafe_vault_path(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            vault = Path(temporary_directory) / "vault\u0007bell"
+            result = run_script(RECALL, "--vault", str(vault), "memory\u0007")
+            self.assertEqual(result.returncode, 4)
+            self.assertEqual(result.stderr, "E_UNSAFE_INPUT\n")
+
+    def test_deeply_nested_metadata_is_a_vault_state_error(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            vault = Path(temporary_directory) / "vault"
+            identifier = write_raw_record(vault, title="Nested", content="Nested memory.\n")
+            path = vault / "memories" / f"{identifier}.md"
+            lines = path.read_text(encoding="utf-8").split("\n")
+            depth = 100000
+            lines[4] = "[" * depth + "]" * depth
+            path.write_bytes("\n".join(lines).encode("utf-8"))
+            result = run_script(RECALL, "--vault", str(vault), "memory")
+            self.assertEqual(result.returncode, 3, result.stderr[-300:])
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(result.stderr, "E_VAULT_STATE\n")
+
+    def test_metadata_parser_exhaustion_is_a_vault_state_error(self):
+        # Covers interpreters whose json parser raises instead of recursing deeply,
+        # and the MemoryError a hostile metadata line can provoke.
+        recall = load_script_module("recall.py")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            vault = Path(temporary_directory) / "vault"
+            write_raw_record(vault, title="Plain", content="Plain memory.\n")
+            for error in (RecursionError, MemoryError):
+                with self.subTest(error=error.__name__):
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    with mock.patch.object(recall.json, "loads", side_effect=error), \
+                            contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                        code = recall.main(["recall.py", "--vault", str(vault), "memory"])
+                    self.assertEqual(code, 3)
+                    self.assertEqual(stdout.getvalue(), "")
+                    self.assertEqual(stderr.getvalue(), "E_VAULT_STATE\n")
+
+    def test_closed_stdout_exits_cleanly(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            vault = Path(temporary_directory) / "vault"
+            # Larger than any pipe buffer, so the write must fail once the reader closes.
+            write_raw_record(vault, title="Large", content="memory " * 100000 + "\n")
+            process = subprocess.Popen(
+                [sys.executable, str(RECALL), "--vault", str(vault), "--json", "memory"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            process.stdout.close()
+            stderr = process.stderr.read().decode("utf-8")
+            process.stderr.close()
+            code = process.wait(timeout=60)
+            self.assertEqual(code, 5, stderr)
+            self.assertEqual(stderr, "E_OUTPUT_CLOSED\n")
+
+    def test_broken_pipe_during_output_is_reported_once(self):
+        recall = load_script_module("recall.py")
+
+        class ClosedStream(io.StringIO):
+            def write(self, text):
+                raise BrokenPipeError
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            vault = Path(temporary_directory) / "vault"
+            write_raw_record(vault, title="Plain", content="Plain memory.\n")
+            for extra in ((), ("--json",)):
+                with self.subTest(extra=extra):
+                    stderr = io.StringIO()
+                    with contextlib.redirect_stdout(ClosedStream()), contextlib.redirect_stderr(stderr):
+                        code = recall.main(["recall.py", "--vault", str(vault), *extra, "memory"])
+                    self.assertEqual(code, 5)
+                    self.assertEqual(stderr.getvalue(), "E_OUTPUT_CLOSED\n")
 
     def test_index_is_insertion_order_independent(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
