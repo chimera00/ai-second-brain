@@ -24,15 +24,18 @@ and full result records. A successful search with no hits exits 0 and emits
 
 Exit codes: 0 completed search; 2 command-line usage or invalid normalized tag;
 3 invalid or unreadable vault state; 4 rejected unsafe-control or
-credential-shaped query or tag input.
+credential-shaped query or tag input; 5 standard output was closed before the
+results were written (for example, piped into a reader that exited early).
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import ipaddress
 import json
+import os
 import re
 import stat
 import sys
@@ -120,6 +123,24 @@ def configure_standard_streams() -> None:
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
             reconfigure(encoding="utf-8", errors="strict", newline="\n")
+
+
+def is_closed_output(error: OSError) -> bool:
+    # Windows reports a write to a pipe whose reader has gone as EINVAL, not EPIPE.
+    return isinstance(error, BrokenPipeError) or (os.name == "nt" and error.errno == errno.EINVAL)
+
+
+def discard_standard_output() -> None:
+    """Point stdout at the null device so the interpreter's final flush cannot fail again."""
+    try:
+        descriptor = sys.stdout.fileno()
+    except (AttributeError, OSError, ValueError):
+        return
+    null_descriptor = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(null_descriptor, descriptor)
+    finally:
+        os.close(null_descriptor)
 
 
 def has_private_source_shape(value: str) -> bool:
@@ -287,7 +308,10 @@ def validate_supersession(records: list[dict[str, object]]) -> set[str]:
 
 
 def tokens(value: str) -> list[str]:
-    return re.findall(r"[^\W_]+", value.casefold(), flags=re.UNICODE)
+    # Compose before folding so decomposed text matches the NFC query, and again
+    # after folding because casefold can emit decomposed sequences.
+    folded = unicodedata.normalize("NFC", unicodedata.normalize("NFC", value).casefold())
+    return re.findall(r"[^\W_]+", folded, flags=re.UNICODE)
 
 
 def normalize_tag(value: str) -> str:
@@ -336,11 +360,7 @@ def main(argv: list[str]) -> int:
         return 4
     args = build_parser().parse_args(argv[1:])
     query = unicodedata.normalize("NFC", " ".join(args.query))
-    if (
-        has_unsafe_control(query)
-        or any(has_unsafe_control(tag) for tag in args.tag)
-        or has_unsafe_control(str(args.vault))
-    ):
+    if has_unsafe_control(query) or any(has_unsafe_control(tag) for tag in args.tag):
         print("E_UNSAFE_INPUT", file=sys.stderr)
         return 4
     if has_credential_shape(query) or any(has_credential_shape(tag) for tag in args.tag):
@@ -352,10 +372,22 @@ def main(argv: list[str]) -> int:
         print("E_INVALID_TAG", file=sys.stderr)
         return 2
     required_tags = set(normalized_tags)
+    if has_unsafe_control(str(args.vault)):
+        print("E_VAULT_STATE", file=sys.stderr)
+        return 3
     try:
         records = load_records(args.vault)
         superseded_ids = validate_supersession(records)
-    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError, VaultStateError):
+    except (
+        OSError,
+        UnicodeDecodeError,
+        ValueError,
+        json.JSONDecodeError,
+        VaultStateError,
+        # Deeply nested metadata exhausts the JSON parser rather than failing to decode.
+        RecursionError,
+        MemoryError,
+    ):
         print("E_VAULT_STATE", file=sys.stderr)
         return 3
     results = []
@@ -372,14 +404,25 @@ def main(argv: list[str]) -> int:
     results.sort(key=lambda item: (-int(item["score"]), str(item["title"]).casefold(), str(item["id"])))
     results = results[: args.limit]
     payload = {"count": len(results), "query": query, "results": results}
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-    elif not results:
-        print("No results.")
-    else:
-        print("score\tid\ttitle\tpath")
-        for result in results:
-            print(f"{result['score']}\t{result['id']}\t{result['title']}\t{result['path']}")
+    try:
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        elif not results:
+            print("No results.")
+        else:
+            print("score\tid\ttitle\tpath")
+            for result in results:
+                print(f"{result['score']}\t{result['id']}\t{result['title']}\t{result['path']}")
+        sys.stdout.flush()
+    except OSError as error:
+        if not is_closed_output(error):
+            raise
+        discard_standard_output()
+        try:
+            print("E_OUTPUT_CLOSED", file=sys.stderr)
+        except OSError:
+            pass
+        return 5
     return 0
 
 
