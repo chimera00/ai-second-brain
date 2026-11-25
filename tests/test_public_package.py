@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import unittest
 from unittest import mock
 
@@ -23,6 +24,7 @@ EXPECTED_FILES = {
     "scripts/recall.py",
     "tests/test_scripts.py",
     "tests/test_public_package.py",
+    ".github/workflows/ci.yml",
     "example-vault/MEMORY.md",
     "example-vault/doctrine/RULES.md",
     "example-vault/memories/00af7bb411212e166657a60c062848e780fce0557af474e3edd87acedd170dcb.md",
@@ -35,33 +37,47 @@ EXPECTED_FILES = {
 BIDI = re.compile(
     "[" + chr(0x202A) + "-" + chr(0x202E) + chr(0x2066) + "-" + chr(0x2069) + "]"
 )
-_PROHIBITED_TERMS = (
-    "tone" + "a",
-    "tone" + "b",
-    "tone" + "c",
-    "tone" + "d",
-    "tone" + "e",
-    "tone" + "f",
-    "tone" + "g",
-    "tone" + "h",
-    "tone" + "i",
-)
-PROHIBITED_PUBLIC_LANGUAGE = re.compile(
-    r"(?i)\b(?:" + "|".join(_PROHIBITED_TERMS) + r")\b"
-)
+# Deny-list terms are shipped only as salted SHA-256 digests of the casefolded, NFC-normalized
+# token, so this public file does not disclose the terms it guards against.
+DENY_SALT = "ai-second-brain/public-deny/v1:"
+TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def token_digest(token: str) -> str:
+    normalized = unicodedata.normalize("NFC", token).casefold()
+    return hashlib.sha256((DENY_SALT + normalized).encode("utf-8")).hexdigest()
+
+
+def contains_denied_token(text: str, digests) -> bool:
+    return any(token_digest(token) in digests for token in TOKEN.findall(text))
+
+
+PROHIBITED_LANGUAGE_DIGESTS = frozenset({
+    "68173eb5628931bd0f2ef85b90fed56f297e4ff34e178c780db17f286eae4a2a",
+    "35dd0850c2800358abbc87060e6c724674b52d41b5bcfa31a6cb73f0b621ae1b",
+    "e39c82fa7464e0a4d80020ad2c61b58a9e3409cd37100c18b3f360d085018219",
+    "c84f643755546b501367d4ed44a0a2e23b796fc04b445760712d745c5aa819a5",
+    "fb7fc63a2cbe8fb79483e346ca163ddf69c5f60eca0fcac37a756b104e43063b",
+    "0e9b06c1027236691432fb36654a1d01f98dc162f27149323445a984e4c460ea",
+    "fece9cf3696fc53f62857567dde5cc069710c247a7197f5041fb2085b15d98db",
+    "4db1f4bc4b0ea58b0424f7e80da6ced6b3173687d16e11a59ee7fd32f7d4f42c",
+    "9e1860ee444cb921756f404f9cedba6ea2af5fd5f3739efed679d1d7bfa7ccbc",
+})
 ABSOLUTE_PRIVATE_PATH = re.compile(
     r"(?i)(?:[A-Z]:\\" + "Users" + r"\\|/" + "Users/|/" + "home/|/" + "root/)"
 )
 MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
-_INTERNAL_LABELS = (
-    "label" + "a",
-    "label" + "b",
-    "label" + "c",
-    "label" + "d",
-    "label" + "e",
-    "label" + "f",
-    "label" + "g",
-)
+INTERNAL_LABEL_DIGESTS = frozenset({
+    "4be98f451a3975930ae5d3630426653f08ba7dc87f253e29f25ee31779f896d3",
+    "82cafe328db2eb1ff1380a0fef6a92d944761dbcd741f20e6fdda85e658a4a3a",
+    "99ae66749185cb26476618665b00cb9a23cb16d350114b3880cfc2deabdad187",
+    "7bcde2dafbb6c665b19197ab8bb5711dbe5907115f59b65db3bb888eb07570ec",
+    "1be595b345ca270930ad453352902db3830948f78f1c5747351c65b2a211cec5",
+    "96ea0a78f4855858a504e8697fe5f623968e25721b172b3dd9060450c4b7e936",
+    "97afe9f32a4043e9e860dbdf4f7aab1f4ffc180164bc03a03b181eb5e576805e",
+    "9dbfc3982853ca9479938b7ba55b0258152e45a7eb7735bc0caf7226c08460df",
+})
+NODE_NAME = re.compile(r"(?i)\bnode\d+\b")
 PUBLIC_SAFETY_PATTERNS = {
     "EMAIL": re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"),
     "PRIVATE_PATH": ABSOLUTE_PRIVATE_PATH,
@@ -76,18 +92,18 @@ PUBLIC_SAFETY_PATTERNS = {
     "TOKEN_PREFIX": re.compile(
         r"\b(?:ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|sk-[A-Za-z0-9_-]{24,})\b"
     ),
-    "INTERNAL_LABEL": re.compile(
-        r"(?i)\b(?:" + "|".join(re.escape(value) for value in _INTERNAL_LABELS) + r"|node\d+)\b"
-    ),
 }
 
 
 def public_safety_findings(text: str):
-    return {
+    findings = {
         label
         for label, pattern in PUBLIC_SAFETY_PATTERNS.items()
         if pattern.search(text)
     }
+    if NODE_NAME.search(text) or contains_denied_token(text, INTERNAL_LABEL_DIGESTS):
+        findings.add("INTERNAL_LABEL")
+    return findings
 
 
 def package_files():
@@ -137,7 +153,7 @@ class PublicPackageTests(unittest.TestCase):
                 continue
             text = path.read_text(encoding="utf-8")
             with self.subTest(path=path.relative_to(ROOT).as_posix()):
-                self.assertIsNone(PROHIBITED_PUBLIC_LANGUAGE.search(text))
+                self.assertFalse(contains_denied_token(text, PROHIBITED_LANGUAGE_DIGESTS))
                 self.assertIsNone(ABSOLUTE_PRIVATE_PATH.search(text))
                 self.assertNotRegex(text, r"(?i)\b(?:TODO|TBD|COMING SOON)\b")
 
@@ -155,7 +171,7 @@ class PublicPackageTests(unittest.TestCase):
             "CREDENTIAL_ASSIGNMENT": "api_" + "key=" + "x" * 24,
             "PRIVATE_KEY": "-----BEGIN " + "PRIVATE KEY-----",
             "TOKEN_PREFIX": "gh" + "p_" + "x" * 36,
-            "INTERNAL_LABEL": "label" + "b review",
+            "INTERNAL_LABEL": "canary" + "label review",
         }
         for expected, value in canaries.items():
             with self.subTest(expected=expected):
