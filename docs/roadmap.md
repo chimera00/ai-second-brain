@@ -1,28 +1,29 @@
 # Roadmap
 
-## v0:  Scaffolding and documentation
+Status as of v0.2. "Built" items ship in this repository and are covered by the test suite; "planned" items are
+described in [architecture.md](architecture.md) but not implemented here yet.
 
-- Establish repository structure, terminology, and architectural boundaries.
-- Publish example schemas and configuration placeholders.
-- Define validation, provenance, and failure-state conventions.
+## v0: Scaffolding and documentation (built)
 
-## v1:  Reference capture pipeline
+- Repository structure, terminology, and architectural boundaries.
+- Record format, validation, provenance fields, and failure-state conventions.
 
-- Add a Markdown-vault reference implementation.
-- Schedule bounded ingestion with cron.
-- Implement watermarks, idempotency, schema checks, and secret screening.
-- Quarantine rejected candidates without modifying canonical knowledge.
+## v1: Reference capture (partly built)
 
-## v2:  Recall, selection, and supersession
+- Built: a Markdown-vault reference implementation with content-addressed records, idempotent retries,
+  schema checks, and heuristic secret screening (`scripts/new-memory.py`).
+- Planned: scheduled, bounded ingestion from external sources with resumable watermarks.
+- Planned: a quarantine area for rejected candidates that never touches canonical records.
 
-- Rank eligible knowledge for a query with provenance-aware selection.
-- Add explicit supersession relationships and temporal history.
-- Detect conflicts, stale records, and unresolved candidates.
-- Provide evaluation fixtures for recall quality and failure handling.
+## v2: Recall, selection, and supersession (partly built)
 
-## v3:  Multi-agent review gates
+- Built: deterministic lexical recall with tag filters and explicit zero-result reporting (`scripts/recall.py`).
+- Built: explicit supersession with cycle and missing-target checks; history excluded unless requested.
+- Planned: provenance-aware ranking, stale-record detection, and evaluation fixtures for recall quality.
 
-- Implement a configurable gate ladder for risk-based review.
+## v3: Multi-agent review gates (planned)
+
+- A configurable gate ladder for risk-based review.
 - Separate proposer, reviewer, and promoter responsibilities.
-- Record decisions, evidence, policy versions, and escalation paths.
-- Add human approval points for consequential changes.
+- Recorded decisions, evidence, policy versions, and escalation paths.
+- Human approval points for consequential changes.

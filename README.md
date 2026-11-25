@@ -1,12 +1,14 @@
 # AI Second Brain
 
+[![ci](https://github.com/chimera00/ai-second-brain/actions/workflows/ci.yml/badge.svg)](https://github.com/chimera00/ai-second-brain/actions/workflows/ci.yml)
+
 An AI second brain should give a model the right note at the right time: not pour every note into every prompt.
 
 This repository is a small, inspectable starting point for a local knowledge vault. It creates content-addressed Markdown records, rebuilds a readable index, preserves superseded history, and retrieves records with deterministic lexical scoring. The starter scripts use only the Python standard library and make no network calls.
 
 ## Try the example
 
-Python 3.10 or newer is sufficient.
+Python 3.10 or newer is sufficient; CI runs the suite on 3.10 and 3.12.
 
 ```bash
 python scripts/recall.py --vault example-vault capture contract
@@ -92,6 +94,11 @@ guides/
   quickstart.md
   capture-and-recall.md
   safety-and-maintenance.md
+docs/
+  architecture.md     the full capture, screen, gate, promote design
+  roadmap.md          what is built and what is planned
+.github/workflows/
+  ci.yml              secret scan over full history, tests on every push
 ```
 
 ## Guides
@@ -120,10 +127,6 @@ Each file under `memories/` contains:
 4. the normalized content.
 
 Metadata fields are closed: `content_sha256`, `id`, `source`, `supersedes`, `tags`, `title`, and `version`. Unknown fields poison the vault instead of being silently ignored.
-
-## License
-
-This companion draft does not select, replace, or assert legal metadata. Publication must retain or add the repository-owner-approved license file; until that approval is bound, distribution rights are unknown.
 
 ## The book
 
