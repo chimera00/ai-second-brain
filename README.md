@@ -97,8 +97,11 @@ guides/
 docs/
   architecture.md     the full capture, screen, gate, promote design
   roadmap.md          what is built and what is planned
-.github/workflows/
-  ci.yml              secret scan over full history, tests on every push
+.github/
+  workflows/ci.yml      secret scan over full history, tests on every push
+  workflows/codeql.yml  code scanning for Python and workflows
+  dependabot.yml        weekly pinned-action updates
+SECURITY.md           how to report a vulnerability privately
 ```
 
 ## Guides
